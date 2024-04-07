@@ -11,6 +11,7 @@ RUN mkdir -p /usr/share/bzdev
 COPY tmp/libbzdev-base.jar /usr/share/bzdev
 COPY tmp/libbzdev-ejws.jar /usr/share/bzdev
 COPY acme-manager.jar /usr/share/bzdev/acme-manager.jar
+COPY tmp/EJWS_VERSION /EJWS_VERSION
 
 RUN mkdir /certificates
 

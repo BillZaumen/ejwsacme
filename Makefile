@@ -3,7 +3,7 @@ JFILES = src/org.bzdev.acme/module-info.java \
 
 DOCKER_VERSION = 17-jdk-alpine
 
-acme-manager.jar: $(JFILES)
+acme-manager.jar: $(JFILES) /usr/share/bzdev/libbzdev-ejws.jar
 	rm -rf mods/org.bzdev.acme
 	mkdir -p mods/org.bzdev.acme
 	javac -d mods/org.bzdev.acme -p /usr/share/bzdev $(JFILES)
@@ -20,9 +20,16 @@ docker: acme_client.jar
 	mkdir -p tmp
 	cp /usr/share/bzdev/libbzdev-base.jar tmp
 	cp /usr/share/bzdev/libbzdev-ejws.jar tmp
+	dpkg-query -f '$${Version}\n' -W libbzdev-ejws-java > tmp/EJWS_VERSION
 	docker build --no-cache=true \
 		--tag wtzbzdev/ejwsacme:$(DOCKER_VERSION) .
 	rm -rf tmp
+
+docker-release:
+	docker push wtzbzdev/ejwsacme:$(DOCKER_VERSION)
+
+check:
+	docker run -it --name check wtzbzdev/ejwsacme:$(DOCKER_VERSION) sh
 
 test:
 	docker run -it --name test -e URL=https://`hostname`:14000/dir \
