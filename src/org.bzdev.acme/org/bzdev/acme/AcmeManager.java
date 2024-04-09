@@ -44,6 +44,7 @@ public class AcmeManager extends CertManager {
     private String server() {
 	switch(getMode()) {
 	case NORMAL:
+	case LOCAL:
 	    return "https://acme-v02.api.letsencrypt.org/directory";
 	case STAGED:
 	    return "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -57,13 +58,46 @@ public class AcmeManager extends CertManager {
     // private static String server = "https://" + System.getenv("HOSTNAME")
     // + ":14000/dir";
 
-    private static File log = new File("/cert.log");
+    //
+    // Use system properties for testing outside a container so we
+    // won't need to be root.
+    //
+    private static final String ACME_MANAGER_LOG =
+	System.getProperty("acme.log", "/var/log/cert/cert.log");
+    
+    private static final String ETC_ACME =
+	System.getProperty("acme.dir", "/etc/acme") + "/";
+
+    private static final String TMP =
+	System.getProperty("acme.tmp", "/tmp") + "/";
+
+    private static final String CHALLENGE_DIR =
+	System.getProperty("acme.challenge.dir", "/var/www.well-known") + "/";
+
+
+    private static File log = new File(ACME_MANAGER_LOG);
 
     // set to true for initial testing
     // private static final boolean TEST = true;
 
     private boolean runProgram(String... command) {
-	if (getMode() == CertManager.Mode.TEST) return true;
+	CertManager.Mode mode = getMode();
+	if (mode == CertManager.Mode.TEST) return true;
+	/*
+	if (mode == CertManager.Mode.LOCAL) {
+	    String pathsep = System.getProperty("file.separator");
+	    String keytool = System.getProperty("java.home")
+		+ pathsep + "bin" + pathsep + "keytool";
+	    if (!command[0].equals("echo") && !command[0].equals(keytool)) {
+		String[] cmd = new String[command.length+1];
+		cmd[0] = "echo";
+		for (int i = 0; i < command.length; i++) {
+		    cmd[i+1] = command[i];
+		}
+		return runProgram(cmd);
+	    }
+	}
+	*/
 	try {
 	    ProcessBuilder pb = (new ProcessBuilder(command))
 		.redirectErrorStream(true)
@@ -193,7 +227,11 @@ public class AcmeManager extends CertManager {
 
     private JSObject runAcme(String... args) {
 	List<String> arguments = new LinkedList<>();
-	if (getMode() == CertManager.Mode.TEST) arguments.add("echo"); //
+	CertManager.Mode mode = getMode();
+	if (mode == CertManager.Mode.TEST
+	    || mode == CertManager.Mode.LOCAL) {
+	    arguments.add("echo");
+	}
 	arguments.add("java");
 	arguments.add("-jar");
 	arguments.add("acme_client.jar");
@@ -201,8 +239,15 @@ public class AcmeManager extends CertManager {
 	arguments.add(server());
 	try {
 	    ProcessBuilder pb = new ProcessBuilder(arguments);
+	    if (mode == CertManager.Mode.TEST) {
+		pb.redirectErrorStream(true);
+	    }else if( mode == CertManager.Mode.LOCAL) {
+		pb.redirectErrorStream(true)
+		    .redirectOutput(ProcessBuilder.Redirect.appendTo(log));
+	    }
 	    Process p = pb.start();
-	    if (getMode() == CertManager.Mode.TEST) {
+	    if (mode == CertManager.Mode.TEST
+		|| mode == CertManager.Mode.LOCAL) {
 		JSObject obj = new JSObject();
 		p.waitFor();
 		obj.put("status", "ok");
@@ -236,38 +281,65 @@ public class AcmeManager extends CertManager {
 	    }
 	    return false;
 	}
-
-	if (getMode() == CertManager.Mode.TEST) return true;
+	CertManager.Mode mode = getMode();
+	if (mode == CertManager.Mode.TEST) return true;
 	try {
-	    boolean status =
-		runProgram("openssl", "pkcs12", "-export",
-			   "-password", "changeit",
-			   "-in", "/etc/acme/certdir/fullchain.pem",
-			   "-inkey", "/etc/acme/" + getDomain() + ".key",
-			   "-out", "/tmp/server.p12", "-name", getCertName());
-	    if (status == false) {
-		logError("openssl", "could not export certificate");
-		return status;
+	    boolean status;
+	    if (mode != CertManager.Mode.LOCAL) {
+		status =
+		    runProgram("openssl", "pkcs12", "-export",
+			       "-password", "changeit",
+			       "-in", ETC_ACME + "certdir/fullchain.pem",
+			       "-inkey", ETC_ACME + getDomain() + ".key",
+			       "-out", TMP + "server.p12",
+			       "-name", getCertName());
+		if (status == false) {
+		    logError("openssl", "could not export certificate");
+		    return status;
+		}
 	    }
 	    String pathsep = System.getProperty("file.separator");
 	    String keytool = System.getProperty("java.home")
 		+ pathsep + "bin" + pathsep + "keytool";
-	    status = runProgram(keytool, "-importkeystore",
-				"-deststorepass", "changeit",
-				"-destkeystore",
-				getKeystoreFile().getCanonicalPath(),
-				"-srckeystore", "/tmp/server.p12",
-				"-srcstoretype", "PKC512",
-				"-srcstorepass", "changeit",
-				"-alias", SERVERCERT);
+	    char[] carray = getKeystorePW();
+	    String spw = (carray == null)? null: new String(carray);
+	    char[] carray2 = getKeyPW();
+	    String kpw = (carray2 == null)? spw: new String(carray);
+	    if (getMode() == CertManager.Mode.LOCAL) {
+		// just put a self-signed certificate in the keystore.
+		status = runProgram(keytool,
+                                   "-genkeypair",
+                                   "-keyalg", "EC",
+                                   "-groupname", "secp256r1",
+                                   "-sigalg", "SHA256withECDSA",
+                                   "-keystore",
+				    getKeystoreFile().getCanonicalPath(),
+				    "-keypass", kpw,
+                                   "-storepass", spw,
+                                   "-alias", SERVERCERT,
+                                   "-dname", "CN=" + getDomain(),
+                                   "-validity", "90");
+	    } else {
+		status = runProgram(keytool, "-importkeystore",
+				    "-deststorepass", spw,
+				    "-destkeypass", kpw,
+				    "-destkeystore",
+				    getKeystoreFile().getCanonicalPath(),
+				    "-srckeystore", TMP + "server.p12",
+				    "-srcstoretype", "PKC512",
+				    "-srcstorepass", "changeit",
+				    "-alias", SERVERCERT);
+	    }
 	    if (status == false) {
 		logError("keytool", "failed to import certificate");
 		return status;
 	    }
-	    status = runProgram("rm", "/tmp/server.p12");
-	    if (status == false) {
-		logError("rm", "cannot remove /tmp/server.p12");
-		return status;
+	    if (mode != CertManager.Mode.LOCAL) {
+		status = runProgram("rm", TMP + "server.p12");
+		if (status == false) {
+		    logError("rm", "cannot remove " + TMP + "server.p12");
+		    return status;
+		}
 	    }
 	    return status;
 	} catch (Exception eio) {
@@ -340,7 +412,7 @@ public class AcmeManager extends CertManager {
 
     @Override
     protected void configureHelper(EmbeddedWebServer ews) {
-	File cfile = new File("/var/www.well-known/acme-challenge");
+	File cfile = new File(CHALLENGE_DIR + "acme-challenge");
 	cfile.mkdirs();
 	try {
 	    ews.add("/.well-known/acme-challenge/", DirWebMap.class, cfile,
@@ -399,23 +471,23 @@ public class AcmeManager extends CertManager {
 
 	reqstatus = runProgram("openssl", "ecparam", "-name", "prime256v1",
 			       "-genkey", "-noout",
-			       "-out", "/etc/acme/account.key");
+			       "-out", ETC_ACME + "account.key");
 	if (reqstatus == false) {
 	    logError("openssl", "cannot create key pair");
 	    return;
 	}
 	reqstatus = runProgram("openssl", "ecparam", "-name", "prime256v1",
-			       "-genkey", "-noout", "-out", "/etc/acme/"
+			       "-genkey", "-noout", "-out", ETC_ACME
 			       + getDomain() + ".key");
 	if (reqstatus == false) {
 	    logError("openssl", "cannot create key pair");
 	    return;
 	}
 	reqstatus = runProgram("openssl", "req", "-new",
-			       "-key", "/etc/acme/" + getDomain() + ".key",
+			       "-key", ETC_ACME  + getDomain() + ".key",
 			       "-sha256", "-nodes",
-			       "-subj", "CN=" + getDomain(), "-outform", "PEM",
-			       "-out", "/etc/acme/" + getDomain() +".csr");
+			       "-subj", "/CN=" + getDomain(), "-outform", "PEM",
+			       "-out", ETC_ACME + getDomain() + ".csr");
 	if (reqstatus == false) {
 	    logError("openssl", "cannot create certificate signing request");
 	    return;
@@ -423,7 +495,7 @@ public class AcmeManager extends CertManager {
 	// register
 	
 	JSObject result =
-	    runAcme("--command", "register", "-a", "/etc/acme/account.key",
+	    runAcme("--command", "register", "-a", ETC_ACME + "account.key",
 		    "--with-agreement-update", "--email", getEmail());
 	if (result.get("status", String.class).equals("error")) {
 	    logError("register", result);
@@ -439,7 +511,7 @@ public class AcmeManager extends CertManager {
 		ews.start();
 	    }
 	    /*
-	    File cfile = new File("/var/www.well-known/acme-challenge");
+	    File cfile = new File(CHALLENGE_DIR + "acme-challenge");
 	    cfile.mkdirs();
 	    ews.add("/.well-known/acme-challenge/", DirWebMap.class, cfile,
 		    null, true, false, true);
@@ -447,11 +519,11 @@ public class AcmeManager extends CertManager {
 	
 	    // order
 	    result = runAcme("--command", "order-certificate",
-			     "-a", "/etc/acme/account.key",
-			     "-w", "/etc/acme/workdir/",
-			     "-c", "/etc/acme/" + getDomain() + ".csr",
+			     "-a", ETC_ACME + "account.key",
+			     "-w", ETC_ACME + "workdir/",
+			     "-c", ETC_ACME + getDomain() + ".csr",
 			     "--well-known-dir",
-			     "/var/www.well-known/acme-challenge",
+			     CHALLENGE_DIR + "acme-challenge",
 			     "--one-dir-for-well-known",
 			     "--challenge-type", "HTTP01");
 	    if (result == null
@@ -463,9 +535,9 @@ public class AcmeManager extends CertManager {
 	    }
 	    // verify
 	    result = runAcme("--command", "verify-domains",
-			     "-a", "/etc/acme/account.key",
-			     "-w", "/etc/acme/workdir/",
-			     "-c", "/etc/acme/" + getDomain() + ".csr",
+			     "-a", ETC_ACME + "account.key",
+			     "-w", ETC_ACME + "workdir/",
+			     "-c", ETC_ACME + getDomain() + ".csr",
 			     "--challenge-type", "HTTP01");
 
 	    if (result == null
@@ -477,10 +549,10 @@ public class AcmeManager extends CertManager {
 	    }
 	    // generate and download
 	    result = runAcme("--command", "generate-certificate",
-			     "-a", "/etc/acme/account.key",
-			     "-w", "/etc/acme/workdir/",
-			     "-c", "/etc/acme/" + getDomain() + ".csr",
-			     "--cert-dir /etc/acme/certdir/",
+			     "-a", ETC_ACME + "account.key",
+			     "-w", ETC_ACME + "workdir/",
+			     "-c", ETC_ACME + getDomain() + ".csr",
+			     "--cert-dir", ETC_ACME + "certdir/",
 			     "--challenge-type", "HTTP01");
 	    if (result == null
 		|| result.get("status", String.class).equals("error")) {
@@ -556,7 +628,7 @@ public class AcmeManager extends CertManager {
 		ews.start();
 	    }
 	    /**
-	    File cfile = new File("/var/www.well-known/acme-challenge");
+	    File cfile = new File(CHALLENGE_DIR + "acme-challenge");
 	    cfile.mkdirs();
 	    ews.add("/.well-known/acme-challenge/", DirWebMap.class, cfile,
 		    null, true, false, true);
@@ -564,11 +636,11 @@ public class AcmeManager extends CertManager {
 	    // ews.start();
 	    JSObject result =
 		runAcme("--command", "order-certificate",
-			"-a", "/etc/acme/account.key",
-			"-w", "/etc/acme/workdir/",
-			"-c", "/etc/acme/" + getDomain() + ".csr",
+			"-a", ETC_ACME + "account.key",
+			"-w", ETC_ACME + "workdir/",
+			"-c", ETC_ACME + getDomain() + ".csr",
 			"--well-known-dir",
-			"/var/www.well-known/acme-challenge",
+			CHALLENGE_DIR + "acme-challenge",
 			"--one-dir-for-well-known",
 			"--challenge-type", "HTTP01");
 	    if (result == null
@@ -580,10 +652,10 @@ public class AcmeManager extends CertManager {
 	    }
 	    // verify
 	    result = runAcme("--command", "verify-domains",
-			     "-a", "/etc/acme/account.key",
-			     "-w", "/etc/acme/workdir/",
-			     "-c", "/etc/acme/" + getDomain() + ".csr",
-			"--challenge-type", "HTTP01");
+			     "-a", ETC_ACME + "account.key",
+			     "-w", ETC_ACME + "workdir/",
+			     "-c", ETC_ACME + getDomain() + ".csr",
+			     "--challenge-type", "HTTP01");
 	    if (result == null
 		|| result.get("status", String.class).equals("error")) {
 		renewStatus = false;
@@ -594,10 +666,10 @@ public class AcmeManager extends CertManager {
 
 	    // generate and download
 	    result = runAcme("--command", "order-certificate",
-			     "-a", "/etc/acme/account.key",
-			     "-w", "/etc/acme/workdir/",
-			     "-c", "/etc/acme/" + getDomain() + ".csr",
-			     "--cert-dir /etc/acme/certdir/",
+			     "-a", ETC_ACME + "account.key",
+			     "-w", ETC_ACME + "workdir/",
+			     "-c", ETC_ACME + getDomain() + ".csr",
+			     "--cert-dir",  ETC_ACME + "certdir/",
 			     "--challenge-type", "HTTP01");
 	    if (result == null
 		|| result.get("status", String.class).equals("error")) {
@@ -610,6 +682,31 @@ public class AcmeManager extends CertManager {
 	    }
 	    if (unconfigedEWS) {
 		ews.shutdown(0);
+	    }
+	    try {
+		File ks = getKeystoreFile();
+		if (ks.exists()) {
+		    String pathsep = System.getProperty("file.separator");
+		    String keytool = System.getProperty("java.home")
+			+ pathsep + "bin" + pathsep + "keytool";
+		    char[] carray = getKeystorePW();
+		    String spw = (carray == null)? null: new String(carray);
+			ProcessBuilder pb1 = new
+			    ProcessBuilder(keytool,
+					   "-delete",
+					   "-keystore",
+					   ks.getCanonicalPath(),
+					   "-storepass", spw,
+					   "-alias", SERVERCERT);
+			pb1.redirectOutput
+			    (ProcessBuilder.Redirect.DISCARD);
+			pb1.redirectError
+			    (ProcessBuilder.Redirect.DISCARD);
+			Process p1 = pb1.start();
+			p1.waitFor();
+		}
+	    } catch (Exception ee) {
+		// if failed, there was nothing to delete.
 	    }
 	    boolean status = setupKeystore();
 	    if (status) {

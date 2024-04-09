@@ -55,3 +55,17 @@ cmtest: acme-manager.jar
 		CMTest.java
 	java -p acme-manager.jar:/usr/share/bzdev --add-modules org.bzdev.ejws \
 		CMTest
+
+cmtest2: acme-manager.jar
+	javac -p acme-manager.jar:/usr/share/bzdev \
+		--add-modules org.bzdev.ejws \
+		CMTest2.java
+	rm -rf cmtest2dir cmtest2tmp cmtest2cdir cmtest2.log
+	mkdir -p cmtest2dir cmtest2tmp cmtest2cdir
+	java -p acme-manager.jar:/usr/share/bzdev --add-modules org.bzdev.ejws \
+		-Dacme.log=cmtest2.log \
+		-Dacme.dir=cmtest2dir \
+		-Dacme.tmp=cmtest2tmp \
+		-Dacme.challenge.dir=cmtest2cdir \
+		CMTest2
+	rm -rf cmtest2dir cmtest2tmp cmtest2cdir

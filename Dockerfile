@@ -7,7 +7,7 @@ COPY acme_client.jar /acme_client.jar
 # RUN unzip /acme-client.zip && rm /acme-client.zip \
 #    && mv /acme-client-* /acme-client
 
-RUN mkdir -p /usr/share/bzdev
+RUN mkdir -p /usr/share/bzdev && mkdir -p /var/log/cert
 COPY tmp/libbzdev-base.jar /usr/share/bzdev
 COPY tmp/libbzdev-ejws.jar /usr/share/bzdev
 COPY acme-manager.jar /usr/share/bzdev/acme-manager.jar
