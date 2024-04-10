@@ -46,7 +46,9 @@ public class CMTest {
 
 	cm.getSetup();
 	cm.startMonitoring(ews);
-	Thread.currentThread().sleep(300000);
+	Thread.currentThread().sleep(150000);
+	cm.alwaysCreate(true);
+	Thread.currentThread().sleep(150000);
 	cm.stopMonitoring();
 
     }

@@ -44,15 +44,22 @@ public class AcmeManager extends CertManager {
     private String server() {
 	switch(getMode()) {
 	case NORMAL:
-	case LOCAL:
 	    return "https://acme-v02.api.letsencrypt.org/directory";
 	case STAGED:
 	    return "https://acme-staging-v02.api.letsencrypt.org/directory";
+	case LOCAL:
 	case TEST:
-	    return "https://" + System.getenv("HOSTNAME") + ":14000/dir";
+	    // For LOCAL and TEST, we don't run ACME
+	    return "[no server]";
+
 	}
 	throw new UnexpectedExceptionError();
     }
+
+    static final String PATHSEP = System.getProperty("file.separator");
+    static final String KEYTOOL = System.getProperty("java.home")
+		+ PATHSEP + "bin" + PATHSEP + "keytool";
+
 
 
     // private static String server = "https://" + System.getenv("HOSTNAME")
@@ -85,10 +92,7 @@ public class AcmeManager extends CertManager {
 	if (mode == CertManager.Mode.TEST) return true;
 	/*
 	if (mode == CertManager.Mode.LOCAL) {
-	    String pathsep = System.getProperty("file.separator");
-	    String keytool = System.getProperty("java.home")
-		+ pathsep + "bin" + pathsep + "keytool";
-	    if (!command[0].equals("echo") && !command[0].equals(keytool)) {
+	    if (!command[0].equals("echo") && !command[0].equals(KEYTOOL)) {
 		String[] cmd = new String[command.length+1];
 		cmd[0] = "echo";
 		for (int i = 0; i < command.length; i++) {
@@ -298,16 +302,14 @@ public class AcmeManager extends CertManager {
 		    return status;
 		}
 	    }
-	    String pathsep = System.getProperty("file.separator");
-	    String keytool = System.getProperty("java.home")
-		+ pathsep + "bin" + pathsep + "keytool";
 	    char[] carray = getKeystorePW();
 	    String spw = (carray == null)? null: new String(carray);
 	    char[] carray2 = getKeyPW();
 	    String kpw = (carray2 == null)? spw: new String(carray);
+	    doDelete();
 	    if (getMode() == CertManager.Mode.LOCAL) {
 		// just put a self-signed certificate in the keystore.
-		status = runProgram(keytool,
+		status = runProgram(KEYTOOL,
                                    "-genkeypair",
                                    "-keyalg", "EC",
                                    "-groupname", "secp256r1",
@@ -320,7 +322,7 @@ public class AcmeManager extends CertManager {
                                    "-dname", "CN=" + getDomain(),
                                    "-validity", "90");
 	    } else {
-		status = runProgram(keytool, "-importkeystore",
+		status = runProgram(KEYTOOL, "-importkeystore",
 				    "-deststorepass", spw,
 				    "-destkeypass", kpw,
 				    "-destkeystore",
@@ -350,10 +352,8 @@ public class AcmeManager extends CertManager {
 
     private boolean needCert() {
 	if (getMode() == CertManager.Mode.TEST) return false;
+	CertManager.Mode mode = getMode();
 	boolean status = false;
-	String pathsep = System.getProperty("file.separator");
-	String keytool = System.getProperty("java.home")
-	    + pathsep + "bin" + pathsep + "keytool";
 	char[] carray = getKeystorePW();
 	String spw = (carray == null)? null: new String(carray);
 	char[] carray2 = getKeyPW();
@@ -371,10 +371,17 @@ public class AcmeManager extends CertManager {
 		    tdiff /= (DAY*1000);
 		    Certificate[] chain =
 			keystore.getCertificateChain(SERVERCERT);
-		    boolean selfSigned = (chain.length == 1);
-		    if (3*tdiff <= validity || selfSigned) {
+		    // We want the selfSigned test when ACME is actually
+		    // being used. The test is so we will delete any
+		    // self-signed certificates created for testing when
+		    // we are getting the certificate from Lets Encrypt.
+		    boolean modeTest = mode != CertManager.Mode.TEST
+			&& mode != CertManager.Mode.LOCAL;
+		    boolean selfSigned = (chain.length == 1) && modeTest;
+		    boolean ok = selfSigned || alwaysCreate();
+		    if (3*tdiff <= validity || ok) {
 			ProcessBuilder pb1 = new
-			    ProcessBuilder(keytool,
+			    ProcessBuilder(KEYTOOL,
 					   "-delete",
 					   "-keystore",
 					   ks.getCanonicalPath(),
@@ -401,6 +408,29 @@ public class AcmeManager extends CertManager {
 	}
     }
 
+    private void doDelete() {
+	File ks = getKeystoreFile();
+	if (ks.exists()) {
+	    char[] carray = getKeystorePW();
+	    String spw = (carray == null)? null: new String(carray);
+	    char[] carray2 = getKeyPW();
+	    try {
+		ProcessBuilder pb = new
+		    ProcessBuilder(KEYTOOL,
+				   "-delete",
+				   "-keystore",
+				   ks.getCanonicalPath(),
+				   "-storepass", spw,
+				   "-alias", SERVERCERT);
+		pb.redirectOutput(ProcessBuilder.Redirect.DISCARD);
+		pb.redirectError(ProcessBuilder.Redirect.DISCARD);
+		Process p = pb.start();
+		p.waitFor();
+	    } catch (Exception e) {
+		// ignore - nothing to delete or operation canceled
+	    }
+	}
+    }
 
     boolean reqstatus = false;
 
@@ -530,7 +560,7 @@ public class AcmeManager extends CertManager {
 		|| result.get("status", String.class).equals("error")) {
 		logError("order-certificate", result);
 		reqstatus = false;
-		ews.shutdown(0);
+		if (unconfigedEWS) ews.shutdown(0);
 		return;
 	    }
 	    // verify
@@ -544,7 +574,7 @@ public class AcmeManager extends CertManager {
 		|| result.get("status", String.class).equals("error")) {
 		reqstatus = false;
 		logError("verify-domains", result);
-		ews.shutdown(0);
+		if (unconfigedEWS) ews.shutdown(0);
 		return;
 	    }
 	    // generate and download
@@ -558,7 +588,7 @@ public class AcmeManager extends CertManager {
 		|| result.get("status", String.class).equals("error")) {
 		reqstatus = false;
 		logError("generate-certificate", result);
-		ews.shutdown(0);
+		if (unconfigedEWS) ews.shutdown(0);
 		return;
 	    }
 	    boolean status = setupKeystore();
@@ -634,6 +664,12 @@ public class AcmeManager extends CertManager {
 		    null, true, false, true);
 	    */
 	    // ews.start();
+
+	    if (needCert() == false) {
+		renewStatus = false;
+		return;
+	    }
+
 	    JSObject result =
 		runAcme("--command", "order-certificate",
 			"-a", ETC_ACME + "account.key",
@@ -647,7 +683,7 @@ public class AcmeManager extends CertManager {
 		|| result.get("status", String.class).equals("error")) {
 		renewStatus = false;
 		logError("order-certificate", result);
-		ews.shutdown(0);
+		if (ews != null && unconfigedEWS) ews.shutdown(0);
 		return;
 	    }
 	    // verify
@@ -660,7 +696,7 @@ public class AcmeManager extends CertManager {
 		|| result.get("status", String.class).equals("error")) {
 		renewStatus = false;
 		logError("verify-domains", result);
-		ews.shutdown(0);
+		if (ews != null && unconfigedEWS) ews.shutdown(0);
 		return;
 	    }
 
@@ -675,38 +711,13 @@ public class AcmeManager extends CertManager {
 		|| result.get("status", String.class).equals("error")) {
 		renewStatus = false;
 		logError("order-certificate", result);
-		if (unconfigedEWS) {
+		if (ews != null && unconfigedEWS) {
 		    ews.shutdown(0);
 		}
 		return;
 	    }
-	    if (unconfigedEWS) {
+	    if (ews != null && unconfigedEWS) {
 		ews.shutdown(0);
-	    }
-	    try {
-		File ks = getKeystoreFile();
-		if (ks.exists()) {
-		    String pathsep = System.getProperty("file.separator");
-		    String keytool = System.getProperty("java.home")
-			+ pathsep + "bin" + pathsep + "keytool";
-		    char[] carray = getKeystorePW();
-		    String spw = (carray == null)? null: new String(carray);
-			ProcessBuilder pb1 = new
-			    ProcessBuilder(keytool,
-					   "-delete",
-					   "-keystore",
-					   ks.getCanonicalPath(),
-					   "-storepass", spw,
-					   "-alias", SERVERCERT);
-			pb1.redirectOutput
-			    (ProcessBuilder.Redirect.DISCARD);
-			pb1.redirectError
-			    (ProcessBuilder.Redirect.DISCARD);
-			Process p1 = pb1.start();
-			p1.waitFor();
-		}
-	    } catch (Exception ee) {
-		// if failed, there was nothing to delete.
 	    }
 	    boolean status = setupKeystore();
 	    if (status) {
