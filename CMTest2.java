@@ -4,6 +4,9 @@ import org.bzdev.ejws.*;
 public class CMTest2 {
     public static void main(String argv[]) throws Exception {
 
+	System.out.println("acme.log = " +
+			   System.getProperty("acme.log"));
+
 	System.out.println("Provider names: ");
 	for (String s: CertManager.providerNames()) {
 	    System.out.println("... " + s);
@@ -13,6 +16,7 @@ public class CMTest2 {
 	File ks = new File("cmkeystore.jks");
 	if (ks.exists()) ks.delete();
 
+	/*
 	CertManager cm = CertManager.newInstance("default")
 	    .setCertName("test")
 	    .setDomain("localhost")
@@ -26,11 +30,12 @@ public class CMTest2 {
 	    .setHelper(ewsHelper);
 
 	cm.getSetup();
+	*/
 	
-	cm = CertManager.newInstance("AcmeClient")
+	CertManager cm = CertManager.newInstance("AcmeClient")
 	    .setCertName("test")
 	    .setDomain("localhost")
-	    .setKeystoreFile(new File("cmkeystore.jks"))
+	    .setKeystoreFile(ks)
 	    .setInterval(0)
 	    .setStopDelay(2)
 	    .setTracer(System.out)
